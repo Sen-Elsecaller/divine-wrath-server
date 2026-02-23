@@ -107,6 +107,7 @@ function createRoom(hostId, hostName, avatar = null) {
     scores: {},        // playerId -> PlayerScore
     godHistory: null,  // GodHistory object
     roundWinner: null, // 'god' | 'mortals' | null
+    readyForNextRound: [],  // playerIds ready to continue
     createdAt: Date.now()
   };
 }
@@ -728,18 +729,77 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Stay with penalty
+      // Stay with penalty - save choice for when round starts
+      room.godChoice = { type: 'stay', keepGodId: player.id };
       room.godHistory.hasPenalty = true;
       room.godHistory.consecutiveRounds++;
-      room.godHistory.missedAttacks = 0; // Reset for next round
-
-      // Respawn mortals (god stays god)
-      startNextRound(room, roomCode, player.id, io);
+      room.godHistory.missedAttacks = 0;
 
     } else if (choice === 'cede') {
-      // Cede god role
-      startNextRound(room, roomCode, null, io); // null = choose new god randomly
+      // Cede god role - save choice
+      room.godChoice = { type: 'cede', keepGodId: null };
     }
+
+    // God's choice counts as their ready
+    if (!room.readyForNextRound.includes(socket.id)) {
+      room.readyForNextRound.push(socket.id);
+    }
+
+    io.to(roomCode).emit('room_updated', { room });
+
+    // Check if all players ready
+    checkAllReadyForNextRound(room, roomCode, io);
+  });
+
+  // Player ready for next round
+  socket.on('ready_for_next_round', ({ roomCode }) => {
+    const room = rooms.get(roomCode);
+    if (!room || room.phase !== 'round_transition') return;
+
+    const player = room.players.find(p => p.id === socket.id);
+    if (!player) return;
+
+    // God must use god_choice instead (when needsGodChoice)
+    if (player.role === 'god' && room.roundWinner === 'god') {
+      socket.emit('error', { message: 'God must choose stay or cede first' });
+      return;
+    }
+
+    if (!room.readyForNextRound.includes(socket.id)) {
+      room.readyForNextRound.push(socket.id);
+      io.to(roomCode).emit('room_updated', { room });
+
+      checkAllReadyForNextRound(room, roomCode, io);
+    }
+  });
+
+  // Leave room (clean exit)
+  socket.on('leave_room', ({ roomCode }) => {
+    const room = rooms.get(roomCode);
+    if (!room) return;
+
+    const playerIndex = room.players.findIndex(p => p.id === socket.id);
+    if (playerIndex === -1) return;
+
+    const playerName = room.players[playerIndex].name;
+    room.players.splice(playerIndex, 1);
+    socket.leave(roomCode);
+
+    console.log(`${playerName} left room ${roomCode}`);
+
+    if (room.players.length === 0) {
+      rooms.delete(roomCode);
+      console.log(`Room ${roomCode} deleted (empty)`);
+    } else {
+      // Assign new host if needed
+      if (!room.players.some(p => p.isHost)) {
+        room.players[0].isHost = true;
+      }
+      io.to(roomCode).emit('room_updated', { room });
+    }
+
+    // Confirm to the player that left
+    socket.emit('room_left');
   });
 
   // Handle disconnect
@@ -767,6 +827,14 @@ io.on('connection', (socket) => {
   });
 });
 
+// Check if all players are ready for next round
+function checkAllReadyForNextRound(room, roomCode, io) {
+  if (room.readyForNextRound.length >= room.players.length) {
+    const keepGodId = room.godChoice?.keepGodId ?? null;
+    startNextRound(room, roomCode, keepGodId, io);
+  }
+}
+
 // Handle end of round - check if game ends or transition
 function handleEndOfRound(room, roomCode, winner, io) {
   // Check if this is the last round
@@ -792,19 +860,13 @@ function handleEndOfRound(room, roomCode, winner, io) {
   room.roundWinner = winner;
 
   if (winner === 'mortals') {
-    // Case A: Mortals survived - automatic transition
+    // Case A: Mortals survived - wait for all players to ready
+    room.godChoice = null;  // No god choice needed
     io.to(roomCode).emit('round_ended', {
       room,
       winner: 'mortals',
       needsGodChoice: false,
     });
-
-    // Auto-start next round after short delay
-    setTimeout(() => {
-      if (room.phase === 'round_transition') {
-        startNextRound(room, roomCode, null, io);
-      }
-    }, 3000);
 
   } else {
     // Case B: God killed everyone - god must choose
@@ -832,6 +894,10 @@ function startNextRound(room, roomCode, keepGodId, io) {
   room.turn = 1;
   room.roundWinner = null;
   room.verificationsRemaining = 2;
+
+  // Clear transition state
+  room.readyForNextRound = [];
+  room.godChoice = null;
 
   // Clear claims and attacks from previous round
   room.claims = [];

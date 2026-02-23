@@ -85,6 +85,11 @@ export interface RoundResult {
   godPlayerId?: string;
 }
 
+export interface GodChoice {
+  type: 'stay' | 'cede';
+  keepGodId: string | null;
+}
+
 export interface Room {
   code: string;
   players: Player[];
@@ -99,6 +104,8 @@ export interface Room {
   scores: Record<string, PlayerScore>;
   godHistory: GodHistory | null;
   roundWinner: 'god' | 'mortals' | null;
+  readyForNextRound?: string[];  // playerIds ready to continue
+  godChoice?: GodChoice | null;  // God's stay/cede choice
 }
 
 // Helper to check if a claim already exists
