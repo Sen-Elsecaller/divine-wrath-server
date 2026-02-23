@@ -108,6 +108,7 @@ function createRoom(hostId, hostName, avatar = null) {
     godHistory: null,  // GodHistory object
     roundWinner: null, // 'god' | 'mortals' | null
     readyForNextRound: [],  // playerIds ready to continue
+    godSelectedCell: null,  // Cell God is considering (visible to all)
     createdAt: Date.now()
   };
 }
@@ -635,6 +636,18 @@ io.on('connection', (socket) => {
     }
   });
 
+  // God selects a cell (visible to all players)
+  socket.on('god_select_cell', ({ roomCode, cell }) => {
+    const room = rooms.get(roomCode);
+    if (!room || room.phase !== 'deduction') return;
+
+    const player = room.players.find(p => p.id === socket.id);
+    if (!player || player.role !== 'god') return;
+
+    room.godSelectedCell = cell;  // null to deselect
+    io.to(roomCode).emit('room_updated', { room });
+  });
+
   // God attacks a cell
   socket.on('attack_cell', ({ roomCode, cell }) => {
     const room = rooms.get(roomCode);
@@ -645,6 +658,9 @@ io.on('connection', (socket) => {
 
     const hitPlayer = room.players.find(p => p.position === cell);
     const god = room.players.find(p => p.role === 'god');
+
+    // Clear god selection after attack
+    room.godSelectedCell = null;
 
     room.attacks.push({
       cell,
@@ -899,9 +915,10 @@ function startNextRound(room, roomCode, keepGodId, io) {
   room.readyForNextRound = [];
   room.godChoice = null;
 
-  // Clear claims and attacks from previous round
+  // Clear claims, attacks and god selection from previous round
   room.claims = [];
   room.attacks = [];
+  room.godSelectedCell = null;
 
   if (keepGodId) {
     // God stays (Case B - chose "stay")

@@ -106,6 +106,7 @@ export interface Room {
   roundWinner: 'god' | 'mortals' | null;
   readyForNextRound?: string[];  // playerIds ready to continue
   godChoice?: GodChoice | null;  // God's stay/cede choice
+  godSelectedCell?: number | null;  // Cell God is considering (visible to all)
 }
 
 // Helper to check if a claim already exists
