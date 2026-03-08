@@ -14,11 +14,9 @@ import {
   generatePlayerAddressSync,
 } from './relayer.js';
 
-// Feature flag for blockchain integration
-const USE_BLOCKCHAIN = process.env.USE_BLOCKCHAIN === 'true';
+// Relayer configuration (for ZK mode)
 const RELAYER_CONFIGURED = isRelayerConfigured();
 
-console.log(`[Config] USE_BLOCKCHAIN: ${USE_BLOCKCHAIN}`);
 console.log(`[Config] RELAYER_CONFIGURED: ${RELAYER_CONFIGURED}`);
 if (RELAYER_CONFIGURED) {
   console.log(`[Config] Relayer address: ${getRelayerAddress()}`);
@@ -33,8 +31,7 @@ app.get('/', (req, res) => {
     status: 'ok',
     message: 'Divine Wrath WebSocket Server',
     port: process.env.PORT || 3001,
-    blockchain: {
-      enabled: USE_BLOCKCHAIN,
+    zkSupport: {
       relayerConfigured: RELAYER_CONFIGURED,
       relayerAddress: RELAYER_CONFIGURED ? getRelayerAddress() : null,
       contractId: process.env.DIVINE_WRATH_CONTRACT_ID || null,
@@ -84,7 +81,7 @@ function hashRoomCodeToSessionId(roomCode) {
 }
 
 // Create initial room state
-function createRoom(hostId, hostName, avatar = null) {
+function createRoom(hostId, hostName, avatar = null, zkEnabled = false) {
   return {
     code: generateRoomCode(),
     players: [{
@@ -100,6 +97,7 @@ function createRoom(hostId, hostName, avatar = null) {
     turn: 0,
     currentRound: 1,
     totalRounds: DEFAULT_ROUNDS,
+    zkEnabled,         // If true, claims require ZK proofs and blockchain verification
     currentPlayerIndex: 0,
     claims: [],
     attacks: [],
@@ -130,12 +128,15 @@ io.on('connection', (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
   // Create a new room
-  socket.on('create_room', ({ playerName, avatar }) => {
-    const room = createRoom(socket.id, playerName, avatar);
+  socket.on('create_room', ({ playerName, avatar, zkEnabled = false }) => {
+    // zkEnabled requires relayer to be configured
+    const effectiveZkEnabled = zkEnabled && RELAYER_CONFIGURED;
+
+    const room = createRoom(socket.id, playerName, avatar, effectiveZkEnabled);
     rooms.set(room.code, room);
     socket.join(room.code);
 
-    console.log(`Room created: ${room.code} by ${playerName}`);
+    console.log(`Room created: ${room.code} by ${playerName} (ZK: ${effectiveZkEnabled})`);
     socket.emit('room_created', { roomCode: room.code, room });
   });
 
@@ -260,12 +261,12 @@ io.on('connection', (socket) => {
 
     console.log(`Game started in room ${roomCode}`);
 
-    // Start game on blockchain (async, don't block the game start)
-    if (USE_BLOCKCHAIN && RELAYER_CONFIGURED) {
+    // Start game on blockchain (async, don't block the game start) - only if ZK mode enabled
+    if (room.zkEnabled) {
       const god = shuffled.find(p => p.role === 'god');
       const mortals = shuffled.filter(p => p.role === 'mortal');
 
-      console.log(`[Blockchain] Starting game on-chain...`);
+      console.log(`[Blockchain] Starting game on-chain (ZK mode)...`);
       console.log(`[Blockchain] Session ID: ${sessionId}`);
       console.log(`[Blockchain] God: ${god.id}, Mortals: ${mortals.map(m => m.id).join(', ')}`);
 
@@ -411,18 +412,18 @@ io.on('connection', (socket) => {
   // Submit claim with ZK proof to blockchain
   // This is called after the browser generates the proof
   socket.on('submit_claim_blockchain', async ({ roomCode, claimId, proof, publicSignals }) => {
-    if (!USE_BLOCKCHAIN || !RELAYER_CONFIGURED) {
-      socket.emit('blockchain_result', {
-        success: false,
-        error: 'Blockchain not enabled or relayer not configured',
-        claimId,
-      });
-      return;
-    }
-
     const room = rooms.get(roomCode);
     if (!room) {
       socket.emit('blockchain_result', { success: false, error: 'Room not found', claimId });
+      return;
+    }
+
+    if (!room.zkEnabled) {
+      socket.emit('blockchain_result', {
+        success: false,
+        error: 'ZK mode not enabled for this room',
+        claimId,
+      });
       return;
     }
 
@@ -520,8 +521,8 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Check if this claim has a ZK proof
-    if (claim.zkProof && USE_BLOCKCHAIN && RELAYER_CONFIGURED) {
+    // Check if this claim has a ZK proof and room has ZK mode enabled
+    if (claim.zkProof && room.zkEnabled) {
       // Verify on blockchain using ZK proof
       console.log(`[Blockchain] God verifying claim ${claimId} with ZK proof...`);
 

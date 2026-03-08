@@ -97,6 +97,7 @@ export interface Room {
   turn: number;
   currentRound: number;
   totalRounds: number;
+  zkEnabled: boolean;  // If true, claims require ZK proofs
   currentPlayerIndex: number;
   claims: Claim[];
   attacks: Attack[];
